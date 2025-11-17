@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Clinic Visit Tracker
+Comment=Track clinic visits and billing
+Exec=/home/user/CoffeeBeansFork/launch_app.sh
+Path=/home/user/CoffeeBeansFork
+Icon=utilities-terminal
+Terminal=true
+Categories=Office;Medical;Utility;
+StartupNotify=true
