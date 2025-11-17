@@ -1,0 +1,380 @@
+{% extends "base.html" %}
+
+{% block title %}Timer - Clinic Visit Tracker{% endblock %}
+{% block nav_timer %}active{% endblock %}
+
+{% block content %}
+<div class="timer-container">
+    <div class="encounter-info" id="encounterInfo">
+        <span id="encounterLabel">Ready to start</span>
+    </div>
+
+    <div class="timer-display" id="timerDisplay">00:00</div>
+
+    <div class="timer-controls">
+        <button class="btn btn-success btn-large" id="startBtn" onclick="startTimer()">Start Visit</button>
+        <button class="btn btn-secondary btn-large" id="pauseBtn" onclick="pauseTimer()" style="display: none;">Pause</button>
+        <button class="btn btn-primary btn-large" id="resumeBtn" onclick="resumeTimer()" style="display: none;">Resume</button>
+        <button class="btn btn-danger btn-large" id="stopBtn" onclick="stopTimer()" style="display: none;">End Visit</button>
+    </div>
+
+    <div class="visit-form" id="visitForm" style="display: none;">
+        <h2 class="mb-3">Visit Details</h2>
+
+        <div class="form-group">
+            <label>Billing Codes (click to select)</label>
+            <div id="billingCodesContainer" style="background-color: var(--bg-secondary); border-radius: 12px; padding: 1.5rem;">
+                <!-- Billing codes will be loaded here -->
+            </div>
+            <div id="visitTypeIndicator" style="margin-top: 1rem; padding: 0.75rem; border-radius: 8px; display: none;">
+                <strong>Visit Type:</strong> <span id="visitTypeText"></span>
+            </div>
+            <div id="wellVisitWarning" class="alert alert-warning" style="display: none; margin-top: 1rem;">
+                ⚠️ Multiple well visit codes selected. Only one well visit code should be used per visit.
+            </div>
+        </div>
+
+        <div id="customFieldsContainer"></div>
+
+        <div class="form-group">
+            <label for="comments">Comments</label>
+            <textarea id="comments" placeholder="Notes about this visit..."></textarea>
+        </div>
+
+        <div style="text-align: center; margin-top: 2rem;">
+            <button class="btn btn-success btn-large" onclick="saveVisit()">Save & Start Next Visit</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let timerInterval = null;
+let startTime = null;
+let pausedTime = 0;
+let totalPausedDuration = 0;
+let isPaused = false;
+let encounterNumber = 0;
+
+// Load encounter number from today's visits
+async function loadEncounterNumber() {
+    const today = new Date().toISOString().split('T')[0];
+    const response = await fetch(`/api/daily-visits?date=${today}`);
+    const data = await response.json();
+    encounterNumber = data.visits.length;
+}
+
+// Load billing codes with POS-style buttons
+async function loadBillingCodes() {
+    const response = await fetch('/api/wrvu-lookup');
+    const wrvuLookup = await response.json();
+
+    const container = document.getElementById('billingCodesContainer');
+    container.innerHTML = '';
+
+    // Group codes by category for better organization
+    const established = ['99212', '99213', '99214', '99215'];
+    const newPatient = ['99202', '99203', '99204', '99205'];
+    const wellNew = ['99381', '99382', '99383', '99384', '99385'];
+    const wellEst = ['99391', '99392', '99393', '99394', '99395'];
+    const modifier = ['25'];
+
+    // Combine sick visits and well visits for compact layout
+    const sickVisits = [...established, ...newPatient];
+    const wellVisits = [...wellNew, ...wellEst];
+
+    const categories = [
+        {title: 'Sick Visits (Established & New)', codes: sickVisits, gridClass: 'billing-buttons-grid-4col'},
+        {title: 'Well Visits (New & Established)', codes: wellVisits, gridClass: 'billing-buttons-grid-7col'},
+        {title: 'Modifier', codes: modifier, gridClass: 'billing-buttons-grid'}
+    ];
+
+    categories.forEach(category => {
+        const categoryDiv = document.createElement('div');
+        categoryDiv.className = 'billing-category';
+
+        const categoryTitle = document.createElement('div');
+        categoryTitle.className = 'billing-category-title';
+        categoryTitle.textContent = category.title;
+        categoryDiv.appendChild(categoryTitle);
+
+        const gridDiv = document.createElement('div');
+        gridDiv.className = category.gridClass || 'billing-buttons-grid';
+
+        category.codes.forEach(code => {
+            if (wrvuLookup[code]) {
+                const codeInfo = wrvuLookup[code];
+                const button = document.createElement('div');
+                button.className = 'billing-btn';
+                button.dataset.code = code;
+
+                button.innerHTML = `
+                    <div class="billing-btn-code">${code}</div>
+                    <div class="billing-btn-desc">${codeInfo.description}</div>
+                    <div class="billing-btn-wrvu">${codeInfo.wrvu} wRVU</div>
+                `;
+
+                button.onclick = () => toggleBillingCode(button, code);
+                gridDiv.appendChild(button);
+            }
+        });
+
+        categoryDiv.appendChild(gridDiv);
+        container.appendChild(categoryDiv);
+    });
+}
+
+// Well visit codes for detection
+const WELL_VISIT_CODES = ['99381', '99382', '99383', '99384', '99385', '99391', '99392', '99393', '99394', '99395'];
+
+// Toggle billing code selection
+function toggleBillingCode(button, code) {
+    button.classList.toggle('selected');
+    updateVisitTypeIndicator();
+}
+
+// Update visit type indicator based on selected codes
+function updateVisitTypeIndicator() {
+    const selectedCodes = Array.from(document.querySelectorAll('.billing-btn.selected')).map(btn => btn.dataset.code);
+    const wellVisitCodes = selectedCodes.filter(code => WELL_VISIT_CODES.includes(code));
+
+    const indicator = document.getElementById('visitTypeIndicator');
+    const visitTypeText = document.getElementById('visitTypeText');
+    const warning = document.getElementById('wellVisitWarning');
+
+    if (selectedCodes.length > 0) {
+        indicator.style.display = 'block';
+
+        if (wellVisitCodes.length > 0) {
+            visitTypeText.textContent = 'Well Visit';
+            visitTypeText.style.color = 'var(--accent-green)';
+
+            // Show warning if multiple well visit codes
+            if (wellVisitCodes.length > 1) {
+                warning.style.display = 'block';
+            } else {
+                warning.style.display = 'none';
+            }
+        } else {
+            visitTypeText.textContent = 'Sick Visit';
+            visitTypeText.style.color = 'var(--accent-blue)';
+            warning.style.display = 'none';
+        }
+    } else {
+        indicator.style.display = 'none';
+        warning.style.display = 'none';
+    }
+}
+
+// Load custom fields
+async function loadCustomFields() {
+    const response = await fetch('/api/custom-fields');
+    const fields = await response.json();
+
+    const container = document.getElementById('customFieldsContainer');
+    container.innerHTML = '';
+
+    if (fields.length > 0) {
+        const row = document.createElement('div');
+        row.className = 'form-row';
+
+        fields.forEach(field => {
+            const formGroup = document.createElement('div');
+            formGroup.className = 'form-group';
+
+            const label = document.createElement('label');
+            label.textContent = field.field_name;
+            formGroup.appendChild(label);
+
+            if (field.field_type === 'dropdown') {
+                const select = document.createElement('select');
+                select.id = `custom_${field.id}`;
+                select.dataset.fieldName = field.field_name;
+
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = 'Select...';
+                select.appendChild(defaultOption);
+
+                if (field.options) {
+                    field.options.forEach(option => {
+                        const opt = document.createElement('option');
+                        opt.value = option;
+                        opt.textContent = option;
+                        select.appendChild(opt);
+                    });
+                }
+
+                formGroup.appendChild(select);
+            } else if (field.field_type === 'number') {
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.id = `custom_${field.id}`;
+                input.dataset.fieldName = field.field_name;
+                formGroup.appendChild(input);
+            }
+
+            row.appendChild(formGroup);
+        });
+
+        container.appendChild(row);
+    }
+}
+
+function updateTimerDisplay() {
+    const now = Date.now();
+    const elapsed = isPaused
+        ? pausedTime - startTime - totalPausedDuration
+        : now - startTime - totalPausedDuration;
+
+    const seconds = Math.floor(elapsed / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+
+    const display = `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+    document.getElementById('timerDisplay').textContent = display;
+}
+
+function startTimer() {
+    encounterNumber++;
+    startTime = Date.now();
+    totalPausedDuration = 0;
+    isPaused = false;
+
+    timerInterval = setInterval(updateTimerDisplay, 100);
+
+    document.getElementById('encounterLabel').textContent = `Encounter #${encounterNumber} - Active`;
+    document.getElementById('encounterInfo').innerHTML = `
+        <span class="status-indicator status-active"></span>
+        <span id="encounterLabel">Encounter #${encounterNumber} - Active</span>
+    `;
+
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('pauseBtn').style.display = 'inline-block';
+    document.getElementById('stopBtn').style.display = 'inline-block';
+    document.getElementById('visitForm').style.display = 'none';
+}
+
+function pauseTimer() {
+    if (!isPaused) {
+        isPaused = true;
+        pausedTime = Date.now();
+
+        document.getElementById('encounterInfo').innerHTML = `
+            <span class="status-indicator status-paused"></span>
+            <span id="encounterLabel">Encounter #${encounterNumber} - Paused</span>
+        `;
+
+        document.getElementById('pauseBtn').style.display = 'none';
+        document.getElementById('resumeBtn').style.display = 'inline-block';
+    }
+}
+
+function resumeTimer() {
+    if (isPaused) {
+        totalPausedDuration += Date.now() - pausedTime;
+        isPaused = false;
+
+        document.getElementById('encounterInfo').innerHTML = `
+            <span class="status-indicator status-active"></span>
+            <span id="encounterLabel">Encounter #${encounterNumber} - Active</span>
+        `;
+
+        document.getElementById('resumeBtn').style.display = 'none';
+        document.getElementById('pauseBtn').style.display = 'inline-block';
+    }
+}
+
+function stopTimer() {
+    clearInterval(timerInterval);
+
+    const endTime = isPaused ? pausedTime : Date.now();
+    const activeDuration = Math.floor((endTime - startTime - totalPausedDuration) / 1000);
+
+    document.getElementById('encounterInfo').innerHTML = `
+        <span class="status-indicator status-stopped"></span>
+        <span id="encounterLabel">Encounter #${encounterNumber} - Completed</span>
+    `;
+
+    document.getElementById('pauseBtn').style.display = 'none';
+    document.getElementById('resumeBtn').style.display = 'none';
+    document.getElementById('stopBtn').style.display = 'none';
+    document.getElementById('visitForm').style.display = 'block';
+
+    // Store the duration for when we save
+    window.currentVisitData = {
+        startTime: new Date(startTime).toISOString(),
+        endTime: new Date(endTime).toISOString(),
+        activeDuration: activeDuration
+    };
+}
+
+async function saveVisit() {
+    // Collect selected billing codes from buttons
+    const billingCodes = [];
+    document.querySelectorAll('.billing-btn.selected').forEach(button => {
+        billingCodes.push(button.dataset.code);
+    });
+
+    // Auto-detect visit type from billing codes
+    const wellVisitCodes = billingCodes.filter(code => WELL_VISIT_CODES.includes(code));
+    const visitType = wellVisitCodes.length > 0 ? 'Well' : 'Sick';
+
+    // Store as JSON array if multiple, single string if one
+    const billingCode = billingCodes.length > 1 ? JSON.stringify(billingCodes) : (billingCodes[0] || '');
+
+    const comments = document.getElementById('comments').value;
+
+    // Collect custom fields
+    const customFields = {};
+    document.querySelectorAll('[id^="custom_"]').forEach(field => {
+        if (field.value) {
+            customFields[field.dataset.fieldName] = field.value;
+        }
+    });
+
+    const visitData = {
+        date: new Date().toISOString().split('T')[0],
+        start_time: window.currentVisitData.startTime,
+        end_time: window.currentVisitData.endTime,
+        active_duration: window.currentVisitData.activeDuration,
+        visit_type: visitType,
+        billing_code: billingCode,
+        comments: comments,
+        custom_fields: customFields
+    };
+
+    const response = await fetch('/api/visit', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(visitData)
+    });
+
+    if (response.ok) {
+        // Reset form
+        document.getElementById('visitType').value = '';
+        document.querySelectorAll('.billing-btn.selected').forEach(button => {
+            button.classList.remove('selected');
+        });
+        document.getElementById('comments').value = '';
+        document.querySelectorAll('[id^="custom_"]').forEach(field => {
+            field.value = '';
+        });
+
+        // Reset timer display
+        document.getElementById('timerDisplay').textContent = '00:00';
+
+        // Restart timer automatically
+        startTimer();
+    } else {
+        alert('Error saving visit. Please try again.');
+    }
+}
+
+// Initialize
+loadEncounterNumber();
+loadBillingCodes();
+loadCustomFields();
+</script>
+{% endblock %}
