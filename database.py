@@ -32,7 +32,7 @@ class Database:
         self.init_db()
 
     def get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -140,13 +140,18 @@ class Database:
         else:
             day_of_week = None
 
+        # Handle optional start_time - provide empty string if not provided
+        start_time = visit_data.get('start_time')
+        if start_time is None or start_time == '':
+            start_time = ''
+
         cursor.execute('''
             INSERT INTO visits (date, start_time, end_time, active_duration,
                               visit_type, billing_code, comments, custom_fields, day_of_week)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             visit_data.get('date'),
-            visit_data.get('start_time'),
+            start_time,
             visit_data.get('end_time'),
             visit_data.get('active_duration', 0),
             visit_data.get('visit_type'),
